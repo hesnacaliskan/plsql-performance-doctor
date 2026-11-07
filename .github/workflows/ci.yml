@@ -34,3 +34,22 @@ jobs:
         run: |
           dotnet run --project src/PlsqlDoctor.Cli -c Release --no-build -- \
             analyze samples/order_processing_fixed.sql --fail-on info
+
+      - name: SARIF output is valid JSON
+        run: |
+          dotnet run --project src/PlsqlDoctor.Cli -c Release --no-build -- \
+            analyze samples --format sarif --out plsql-doctor.sarif --fail-on none
+          jq -e '.version == "2.1.0" and (.runs[0].results | length) > 0' plsql-doctor.sarif
+
+      - name: Pack and smoke-test the global tool
+        run: |
+          dotnet pack src/PlsqlDoctor.Cli -c Release --no-build -o ./nupkg
+          dotnet tool install --tool-path ./.tools --add-source ./nupkg PlsqlPerformanceDoctor
+          ./.tools/plsql-doctor --version
+          ./.tools/plsql-doctor analyze samples/order_processing_fixed.sql --fail-on info
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: nupkg
+          path: nupkg/*.nupkg

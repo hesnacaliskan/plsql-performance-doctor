@@ -3,7 +3,7 @@
 | Source | Type | Health | Critical | Warning | Info |
 |---|---|---:|---:|---:|---:|
 | `samples/order_processing_fixed.sql` | PL/SQL | 100/100 | 0 | 0 | 0 |
-| `samples/order_processing_slow.sql` | PL/SQL | 21/100 | 3 | 8 | 2 |
+| `samples/order_processing_slow.sql` | PL/SQL | 11/100 | 5 | 9 | 2 |
 | `samples/plans/daily_items_allstats.txt` | Execution plan | 82/100 | 0 | 2 | 0 |
 | `samples/plans/revenue_by_city.txt` | Execution plan | 64/100 | 1 | 2 | 0 |
 
@@ -234,6 +234,88 @@ DELETE FROM customers c
  WHERE NOT EXISTS (SELECT 1
                      FROM orders o
                     WHERE o.customer_id = c.customer_id);
+```
+
+</details>
+
+### 🟠 PD012: Cursor loop nested inside a loop (line 80)
+
+```sql
+FOR l IN (SELECT quantity, unit_price FROM order_lines WHERE order_id = o.order_id) LOOP
+```
+
+**Why:** This cursor loop is nested inside the loop that starts at line 78, so its query is opened, executed and fetched once for every outer row. With N outer rows that is N extra queries, and the work inside the inner loop usually runs row by row as well.
+
+**Fix:** Join the inner query into the outer cursor and process the combined result in one loop, or replace both loops with one set-based statement (INSERT ... SELECT, MERGE or UPDATE with a GROUP BY subquery).
+
+<details><summary>Example</summary>
+
+```sql
+-- One query with a join instead of one inner query per outer row
+FOR r IN (SELECT o.order_id, l.quantity, l.unit_price
+            FROM orders o
+            JOIN order_lines l ON l.order_id = o.order_id
+           WHERE o.status = 'PROCESSED'
+           ORDER BY o.order_id) LOOP
+  ...
+END LOOP;
+```
+
+</details>
+
+### 🔴 PD001: Row-by-row DML inside a loop (line 84)
+
+```sql
+UPDATE orders SET total_amount = l_total WHERE order_id = o.order_id;
+```
+
+**Why:** UPDATE runs once per iteration of the loop that starts at line 78. Each execution is a separate PL/SQL-to-SQL context switch, so 1 million rows means 1 million statement executions.
+
+**Fix:** Replace the loop with one set-based statement (INSERT ... SELECT, MERGE, or UPDATE with a join). If per-row PL/SQL logic is really needed, fetch with BULK COLLECT ... LIMIT and write with FORALL.
+
+<details><summary>Example</summary>
+
+```sql
+-- Set-based: one statement, one context switch
+INSERT INTO target_table (id, status, created_at)
+SELECT s.id, s.status, SYSDATE
+  FROM source_table s
+ WHERE s.status = 'NEW';
+
+-- Bulk: when per-row PL/SQL logic is really needed
+OPEN c_source;
+LOOP
+  FETCH c_source BULK COLLECT INTO l_rows LIMIT 1000;
+  EXIT WHEN l_rows.COUNT = 0;
+  FORALL i IN 1 .. l_rows.COUNT
+    INSERT INTO target_table VALUES l_rows(i);
+END LOOP;
+CLOSE c_source;
+```
+
+</details>
+
+### 🔴 PD013: COMMIT inside a trigger (line 99)
+
+```sql
+COMMIT;
+```
+
+**Why:** The trigger commits in an autonomous transaction once for every row the triggering statement touches: one redo log sync ('log file sync') per row. The committed rows also survive when the main transaction rolls back, so they can describe changes that never happened.
+
+**Fix:** Let the trigger write in the caller's transaction: remove the PRAGMA and the COMMIT. If the data really must survive a rollback, collect the rows in a compound trigger and write them once with FORALL in AFTER STATEMENT.
+
+<details><summary>Example</summary>
+
+```sql
+-- Write in the caller's transaction: no PRAGMA, no COMMIT
+CREATE OR REPLACE TRIGGER trg_orders_audit
+AFTER UPDATE OF status ON orders
+FOR EACH ROW
+BEGIN
+  INSERT INTO order_status_log (order_id, old_status, new_status, changed_at)
+  VALUES (:OLD.order_id, :OLD.status, :NEW.status, SYSDATE);
+END;
 ```
 
 </details>

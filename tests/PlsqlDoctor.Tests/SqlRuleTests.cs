@@ -101,6 +101,12 @@ public class SqlRuleTests
     [InlineData("SELECT 1 FROM t WHERE UPPER(p_email) = email", false)]
     [InlineData("SELECT 1 FROM t WHERE TRUNC(SYSDATE) = d", false)]
     [InlineData("SELECT UPPER(name) FROM t", false)]
+    [InlineData("BEGIN IF l_ok AND UPPER(status) = 'X' THEN NULL; END IF; END", false)]
+    [InlineData("BEGIN IF a THEN NULL; ELSIF b OR TRIM(code) = 'Y' THEN NULL; END IF; END", false)]
+    [InlineData("BEGIN LOOP EXIT WHEN done AND UPPER(state) = 'END'; END LOOP; END", false)]
+    [InlineData("BEGIN l_match := found AND LOWER(name) = 'x'; END", false)]
+    [InlineData("BEGIN IF l_ok THEN SELECT 1 INTO n FROM t WHERE a = 1 AND UPPER(name) = 'X'; END IF; END", true)]
+    [InlineData("SELECT CASE WHEN x = 1 THEN 1 END FROM t WHERE a = 1 AND UPPER(name) = 'X'", true)]
     public void PD005_function_on_column(string sql, bool expected)
     {
         Assert.Equal(expected, Ids(sql + ";").Contains("PD005"));
@@ -161,6 +167,19 @@ public class SqlRuleTests
         Assert.DoesNotContain("PD009", Ids("BEGIN FETCH c BULK COLLECT INTO l_rows LIMIT 500; END;"));
     }
 
+    [Theory]
+    [InlineData("SELECT id BULK COLLECT INTO l_ids FROM big_table", true)]
+    [InlineData("SELECT id, name BULK COLLECT INTO l_ids, l_names FROM t WHERE x = 1", true)]
+    [InlineData("SELECT id BULK COLLECT INTO l_ids FROM t FETCH FIRST 100 ROWS ONLY", false)]
+    [InlineData("SELECT id BULK COLLECT INTO l_ids FROM t WHERE ROWNUM <= 100", false)]
+    [InlineData("SELECT id INTO l_id FROM t WHERE x = 1", false)]
+    [InlineData("DELETE FROM t WHERE x = 1 RETURNING id BULK COLLECT INTO l_ids", false)]
+    [InlineData("INSERT INTO a SELECT id FROM (SELECT id FROM b)", false)]
+    public void PD009_flags_select_bulk_collect_without_row_limit(string sql, bool expected)
+    {
+        Assert.Equal(expected, Ids($"BEGIN {sql}; END;").Contains("PD009"));
+    }
+
     [Fact]
     public void PD010_flags_when_others_then_null()
     {
@@ -173,6 +192,140 @@ public class SqlRuleTests
     {
         Assert.Contains("PD011", Ids("BEGIN SELECT COUNT(*) INTO n FROM t WHERE a = 1; END;"));
         Assert.DoesNotContain("PD011", Ids("BEGIN SELECT COUNT(*) INTO n FROM t WHERE a = 1 AND ROWNUM = 1; END;"));
+    }
+
+    [Theory]
+    [InlineData("IF n > 0 THEN go; END IF;", true)]
+    [InlineData("RETURN n = 0;", true)]
+    [InlineData("IF 0 < n THEN go; END IF;", true)]
+    [InlineData("l_total := n * 2;", false)]
+    [InlineData("log_it('rows: ' || n);", false)]
+    [InlineData("IF n > 100 THEN go; END IF;", false)]
+    [InlineData("n := 5; log_it(n);", true)]
+    public void PD011_ignores_counts_that_are_used_as_numbers(string usage, bool expected)
+    {
+        var sql = $"BEGIN SELECT COUNT(*) INTO n FROM t WHERE a = 1; {usage} END;";
+        Assert.Equal(expected, Ids(sql).Contains("PD011"));
+    }
+
+    [Fact]
+    public void PD011_usage_check_stops_at_the_next_subprogram()
+    {
+        const string sql = """
+            FUNCTION a RETURN BOOLEAN IS n NUMBER;
+            BEGIN SELECT COUNT(*) INTO n FROM t; RETURN n > 0; END a;
+            PROCEDURE b IS n NUMBER;
+            BEGIN n := 7; log_it(n * 2); END b;
+            """;
+
+        Assert.Contains("PD011", Ids(sql));
+    }
+
+    [Theory]
+    [InlineData("EXECUTE IMMEDIATE 'SELECT * FROM t WHERE x = ' || TO_CHAR(5)", false)]
+    [InlineData("EXECUTE IMMEDIATE 'BEGIN log_it(' || CHR(39) || 'x' || CHR(39) || '); END;'", false)]
+    [InlineData("EXECUTE IMMEDIATE 'SELECT * FROM t WHERE x = ' || TO_CHAR(p_id)", true)]
+    [InlineData("EXECUTE IMMEDIATE 'SELECT * FROM t WHERE d = ' || TO_CHAR(SYSDATE)", true)]
+    [InlineData("EXECUTE IMMEDIATE 'SELECT * FROM t WHERE x = ' || my_pkg.format(5)", true)]
+    public void PD008_builtin_functions_of_constants_are_not_values(string sql, bool expected)
+    {
+        Assert.Equal(expected, Ids($"BEGIN {sql}; END;").Contains("PD008"));
+    }
+
+    [Fact]
+    public void PD012_flags_cursor_loop_inside_a_loop()
+    {
+        const string sql = """
+            BEGIN
+              FOR o IN (SELECT id FROM orders) LOOP
+                FOR l IN (SELECT qty FROM lines WHERE order_id = o.id) LOOP
+                  l_total := l_total + l.qty;
+                END LOOP;
+                FOR c IN c_items(o.id) LOOP
+                  NULL;
+                END LOOP;
+              END LOOP;
+            END;
+            """;
+
+        var findings = Analyze(sql).Where(f => f.RuleId == "PD012").ToList();
+        Assert.Equal([3, 6], findings.Select(f => f.Line));
+        Assert.Contains("line 2", findings[0].Message);
+    }
+
+    [Theory]
+    [InlineData("FOR i IN 1 .. 10 LOOP NULL; END LOOP;")]
+    [InlineData("FOR i IN REVERSE 1 .. n LOOP NULL; END LOOP;")]
+    [InlineData("FOR i IN l_ids.FIRST .. l_ids.LAST LOOP NULL; END LOOP;")]
+    [InlineData("FOR i IN INDICES OF l_ids LOOP NULL; END LOOP;")]
+    [InlineData("FORALL i IN 1 .. l_ids.COUNT DELETE FROM t WHERE id = l_ids(i);")]
+    public void PD012_ignores_numeric_and_collection_loops(string inner)
+    {
+        var sql = $"BEGIN FOR o IN (SELECT id FROM orders) LOOP {inner} END LOOP; END;";
+        Assert.DoesNotContain("PD012", Ids(sql));
+    }
+
+    [Fact]
+    public void PD012_ignores_a_single_cursor_loop()
+    {
+        Assert.DoesNotContain("PD012", Ids("BEGIN FOR o IN (SELECT id FROM orders) LOOP NULL; END LOOP; END;"));
+    }
+
+    [Fact]
+    public void PD013_flags_commit_in_row_level_autonomous_trigger()
+    {
+        const string sql = """
+            CREATE OR REPLACE TRIGGER trg_audit
+            AFTER UPDATE ON orders
+            FOR EACH ROW
+            DECLARE
+              PRAGMA AUTONOMOUS_TRANSACTION;
+            BEGIN
+              INSERT INTO audit_log (id) VALUES (:NEW.id);
+              COMMIT;
+            END;
+            /
+            CREATE OR REPLACE PROCEDURE p IS
+            BEGIN
+              UPDATE t SET x = 1;
+              COMMIT;
+            END;
+            /
+            """;
+
+        var finding = Assert.Single(Analyze(sql), f => f.RuleId == "PD013");
+        Assert.Equal(8, finding.Line);
+        Assert.Equal(Severity.Critical, finding.Severity);
+        Assert.Contains("every row", finding.Message);
+    }
+
+    [Fact]
+    public void PD013_severity_depends_on_trigger_kind()
+    {
+        const string statementLevel = """
+            CREATE TRIGGER trg_log AFTER INSERT ON orders
+            DECLARE PRAGMA AUTONOMOUS_TRANSACTION;
+            BEGIN INSERT INTO load_log VALUES (SYSDATE); COMMIT; END;
+            """;
+        const string notAutonomous = "CREATE TRIGGER trg_x BEFORE INSERT ON t BEGIN COMMIT; END;";
+
+        Assert.Equal(Severity.Warning, Assert.Single(Analyze(statementLevel), f => f.RuleId == "PD013").Severity);
+        var invalid = Assert.Single(Analyze(notAutonomous), f => f.RuleId == "PD013");
+        Assert.Equal(Severity.Critical, invalid.Severity);
+        Assert.Contains("ORA-04092", invalid.Message);
+    }
+
+    [Theory]
+    [InlineData("BEGIN\n  l := 'abc;\n")]
+    [InlineData("BEGIN\n  /* never closed\n  COMMIT;")]
+    [InlineData("q'[unterminated")]
+    [InlineData("\"unterminated identifier")]
+    [InlineData("END LOOP; END LOOP; LOOP")]
+    [InlineData("")]
+    public void Malformed_source_never_throws(string sql)
+    {
+        var report = new SqlAnalyzer().Analyze(sql, "bad.sql");
+        Assert.NotNull(report.Findings);
     }
 
     [Fact]
@@ -202,5 +355,24 @@ public class SqlRuleTests
 
         var finding = Assert.Single(Analyze(sql));
         Assert.Equal(4, finding.Line);
+    }
+
+    [Fact]
+    public void Ignore_comment_skips_blank_and_comment_lines_before_the_code()
+    {
+        const string sql = """
+            BEGIN
+              FOR r IN (SELECT id FROM t) LOOP
+                -- plsql-doctor:ignore PD001 (tiny lookup table, at most 20 rows)
+
+                -- see ticket DBA-1234
+                INSERT INTO a VALUES (r.id);
+                INSERT INTO b VALUES (r.id);
+              END LOOP;
+            END;
+            """;
+
+        var finding = Assert.Single(Analyze(sql));
+        Assert.Equal(7, finding.Line);
     }
 }

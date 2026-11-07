@@ -8,3 +8,5 @@ obj/
 TestResults/
 nupkg/
 report.md
+.tools/
+*.sarif

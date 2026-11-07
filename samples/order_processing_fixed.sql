@@ -80,5 +80,28 @@ CREATE OR REPLACE PACKAGE BODY order_processing AS
      WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.customer_id);
   END archive_orders;
 
+  PROCEDURE recalculate_totals IS
+  BEGIN
+    -- One MERGE with an aggregate instead of one inner query and one UPDATE per order.
+    MERGE INTO orders o
+    USING (SELECT order_id, SUM(quantity * unit_price) AS total_amount
+             FROM order_lines
+            GROUP BY order_id) l
+       ON (o.order_id = l.order_id)
+     WHEN MATCHED THEN UPDATE
+          SET o.total_amount = l.total_amount
+        WHERE o.status = 'PROCESSED';
+  END recalculate_totals;
+
 END order_processing;
+/
+
+-- The audit row is written in the caller's transaction: no autonomous commit per row.
+CREATE OR REPLACE TRIGGER trg_orders_audit
+AFTER UPDATE OF status ON orders
+FOR EACH ROW
+BEGIN
+  INSERT INTO order_status_log (order_id, old_status, new_status, changed_at)
+  VALUES (:OLD.order_id, :OLD.status, :NEW.status, SYSDATE);
+END;
 /

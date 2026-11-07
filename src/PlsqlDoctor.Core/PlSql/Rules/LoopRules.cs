@@ -136,3 +136,64 @@ public sealed class CommitInLoopRule : SqlRule
         }
     }
 }
+
+/// <summary>PD012: a cursor FOR loop nested inside another loop (the inner query runs once per outer row).</summary>
+public sealed class NestedCursorLoopRule : SqlRule
+{
+    // FOR i IN REVERSE 1 .. n, FOR i IN INDICES OF / VALUES OF l_tab iterate numbers or collections.
+    private static readonly HashSet<string> NonCursorIterands = Words("REVERSE", "INDICES", "VALUES", "PAIRS");
+
+    private const string FixExample = """
+        -- One query with a join instead of one inner query per outer row
+        FOR r IN (SELECT o.order_id, l.quantity, l.unit_price
+                    FROM orders o
+                    JOIN order_lines l ON l.order_id = o.order_id
+                   WHERE o.status = 'PROCESSED'
+                   ORDER BY o.order_id) LOOP
+          ...
+        END LOOP;
+        """;
+
+    public override RuleInfo Info { get; } = new(
+        "PD012",
+        Severity.Warning,
+        "Context switching",
+        "Cursor loop nested inside a loop",
+        "The inner cursor is opened and its query executed once per row of the outer loop.");
+
+    public override IEnumerable<Finding> Analyze(SqlContext ctx)
+    {
+        for (var i = 0; i < ctx.Tokens.Count; i++)
+        {
+            var t = ctx.Tokens[i];
+            if (ctx.LoopDepth[i] == 0 || !t.IsWord("FOR") || ctx.At(i + 1) is not { IsIdentifier: true } ||
+                !ctx.IsWordAt(i + 2, "IN"))
+            {
+                continue;
+            }
+
+            var loop = ctx.FindTopLevel(i + 3, x => x.IsWord("LOOP"));
+            if (loop < 0 || ctx.At(i + 3) is not { } iterand || iterand.IsWordIn(NonCursorIterands)) continue;
+
+            var isRange = false;
+            for (var k = i + 3; k < loop; k++)
+            {
+                if (ctx.Tokens[k].IsSymbol("..")) isRange = true;
+            }
+
+            var isInlineQuery = iterand.IsSymbol("(") && ctx.IsWordAt(i + 4, "SELECT");
+            var isNamedCursor = iterand.IsIdentifier && !isRange;
+            if (isRange || !(isInlineQuery || isNamedCursor)) continue;
+
+            yield return Create(
+                ctx,
+                t,
+                $"This cursor loop is nested inside the loop that starts at line {ctx.LoopStartLine[i]}, so its query is opened, " +
+                "executed and fetched once for every outer row. With N outer rows that is N extra queries, and the work " +
+                "inside the inner loop usually runs row by row as well.",
+                "Join the inner query into the outer cursor and process the combined result in one loop, or replace both " +
+                "loops with one set-based statement (INSERT ... SELECT, MERGE or UPDATE with a GROUP BY subquery).",
+                FixExample);
+        }
+    }
+}

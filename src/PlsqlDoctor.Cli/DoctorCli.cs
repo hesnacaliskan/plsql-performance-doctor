@@ -69,6 +69,7 @@ public static class DoctorCli
         Severity? failOn = Severity.Critical;
         var noColor = false;
         var examples = false;
+        Encoding? encoding = null;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -91,6 +92,11 @@ public static class DoctorCli
                 case "-e" or "--examples":
                     examples = true;
                     break;
+                case "--encoding":
+                    encoding = SourceReader.ParseEncoding(Next()) ?? throw new UsageException(
+                        $"Unknown encoding '{args[i]}'. Use auto, utf-8, a name such as windows-1254, or a code page number.");
+                    if (encoding == SourceReader.Auto) encoding = null;
+                    break;
                 case "-":
                     paths.Add("-");
                     break;
@@ -111,10 +117,12 @@ public static class DoctorCli
             "console" => new ConsoleReporter(useColor, examples),
             "markdown" or "md" => new MarkdownReporter(),
             "json" => new JsonReporter(),
-            _ => throw new UsageException($"Unknown format '{format}'. Use console, markdown or json."),
+            "sarif" => new SarifReporter(
+                SqlAnalyzer.DefaultRules.Select(r => r.Info).Concat(PlanAnalyzer.DefaultRules.Select(r => r.Info))),
+            _ => throw new UsageException($"Unknown format '{format}'. Use console, markdown, json or sarif."),
         };
 
-        var reports = CollectReports(command, paths, stdin);
+        var reports = CollectReports(command, paths, stdin, encoding);
         if (reports.Count == 0) throw new UsageException("No PL/SQL or execution plan files found.");
 
         if (outFile is not null)
@@ -132,7 +140,7 @@ public static class DoctorCli
         return failed ? FindingsAboveThreshold : Ok;
     }
 
-    private static List<AnalysisReport> CollectReports(string command, List<string> paths, TextReader? stdin)
+    private static List<AnalysisReport> CollectReports(string command, List<string> paths, TextReader? stdin, Encoding? encoding)
     {
         var sqlAnalyzer = new SqlAnalyzer();
         var planAnalyzer = new PlanAnalyzer();
@@ -141,7 +149,8 @@ public static class DoctorCli
         void AnalyzeText(string text, string name, bool forcePlan)
         {
             var isPlan = forcePlan || PlanParser.LooksLikePlan(text);
-            reports.Add(isPlan ? planAnalyzer.Analyze(text, name) : sqlAnalyzer.Analyze(text, name));
+            if (isPlan) reports.AddRange(planAnalyzer.AnalyzeAll(text, name));
+            else reports.Add(sqlAnalyzer.Analyze(text, name));
         }
 
         foreach (var path in paths)
@@ -164,7 +173,7 @@ public static class DoctorCli
                     var isPlanFile = PlanExtensions.Contains(ext);
                     if (command == "plan" ? !isPlanFile : !(isSql || isPlanFile)) continue;
 
-                    var text = File.ReadAllText(file);
+                    var text = SourceReader.Read(file, encoding);
                     // In a directory, plain .txt files only count when they really contain a plan.
                     if (!isSql && !PlanParser.LooksLikePlan(text)) continue;
                     AnalyzeText(text, DisplayPath(file), command == "plan");
@@ -172,7 +181,7 @@ public static class DoctorCli
             }
             else if (File.Exists(path))
             {
-                AnalyzeText(File.ReadAllText(path), DisplayPath(path), command == "plan");
+                AnalyzeText(SourceReader.Read(path, encoding), DisplayPath(path), command == "plan");
             }
             else
             {
@@ -223,15 +232,18 @@ public static class DoctorCli
               plsql-doctor rules                                List all rules
 
             Options:
-              -f, --format <console|markdown|json>   Output format (default: console)
+              -f, --format <console|markdown|json|sarif>
+                                                     Output format (default: console)
               -o, --out <file>                       Write the report to a file
               -e, --examples                         Show fix examples in console output
                   --fail-on <none|info|warning|critical>
                                                      Exit with code 1 when a finding has at least this
                                                      severity (default: critical)
                   --no-color                         Disable colors
+                  --encoding <auto|name|code page>   Source file encoding. auto (default) reads BOMs and
+                                                     UTF-8, else falls back to the system ANSI code page
 
-            Suppress a finding with a comment on the same or the previous line:
+            Suppress a finding with a comment on the same line or above the code:
               -- plsql-doctor:ignore PD005 (covered by a function-based index)
 
             Exit codes: 0 = ok, 1 = findings at or above --fail-on, 2 = usage error

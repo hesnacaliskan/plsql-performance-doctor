@@ -44,17 +44,20 @@ happens**: in the terminal and in CI, with no database connection needed.
 
 ## Features
 
-- **11 PL/SQL rules.** It detects loop structure, so it knows the difference between a query that runs
+- **13 PL/SQL rules.** It detects loop structure, so it knows the difference between a query that runs
   once and one that runs once per row.
 - **6 execution plan rules.** It parses `DBMS_XPLAN.DISPLAY` and `DISPLAY_CURSOR` output, including
-  `ALLSTATS LAST` with estimated vs. actual rows.
+  `ALLSTATS LAST` with estimated vs. actual rows. Output with several child cursors is split into one
+  report per plan.
 - **Concrete fixes.** Findings include rewritten code or ready-to-run DDL, for example
   `CREATE INDEX ix_orders_order_date ON orders (order_date);`.
 - **Health score** from 0 to 100 per file.
-- **CI friendly.** Console, Markdown and JSON output, `--fail-on` exit codes, and inline suppression
-  comments.
+- **CI friendly.** Console, Markdown, JSON and SARIF output, `--fail-on` exit codes, and inline
+  suppression comments. SARIF puts findings inline on GitHub pull requests through code scanning.
 - **No false positives from comments or strings.** It uses a real PL/SQL lexer, including `q'[...]'`
   quoting, not regex on raw text.
+- **Legacy encodings.** Files without a BOM that are not valid UTF-8 are read with the system ANSI code
+  page, or with the one you name: `--encoding windows-1254`.
 
 ## Quick start
 
@@ -109,9 +112,11 @@ With `A-Rows` present, the doctor can point at the exact step where the optimize
 | PD006 | Warning | `LIKE '%...'` with a leading wildcard |
 | PD007 | Warning | `NOT IN (SELECT ...)`, which is NULL-unsafe and can block anti-joins |
 | PD008 | Critical | `EXECUTE IMMEDIATE` built with `\|\|` instead of bind variables |
-| PD009 | Warning | `FETCH ... BULK COLLECT` without `LIMIT` |
+| PD009 | Warning | `FETCH ... BULK COLLECT` without `LIMIT`, `SELECT ... BULK COLLECT` without a row limit |
 | PD010 | Warning | `WHEN OTHERS THEN NULL` |
 | PD011 | Info | `SELECT COUNT(*) INTO` used only as an existence check |
+| PD012 | Warning | Cursor `FOR` loop nested inside another loop |
+| PD013 | Critical/Warning | `COMMIT` inside a trigger, usually an autonomous transaction per row |
 | PX001 | Warning/Critical | Expensive `TABLE ACCESS FULL` that throws rows away with a filter |
 | PX002 | Critical | `MERGE JOIN CARTESIAN` |
 | PX003 | Warning | Column wrapped in a function or an implicit conversion (`INTERNAL_FUNCTION`, `TO_NUMBER`) |
@@ -129,7 +134,7 @@ is the same package after applying the suggestions.
 
 | File | Health | Critical | Warning | Info |
 |---|---:|---:|---:|---:|
-| `order_processing_slow.sql` | 21/100 | 3 | 8 | 2 |
+| `order_processing_slow.sql` | 11/100 | 5 | 9 | 2 |
 | `order_processing_fixed.sql` | 100/100 | 0 | 0 | 0 |
 
 The full Markdown report is in [docs/sample-report.md](docs/sample-report.md).
@@ -150,7 +155,25 @@ The full Markdown report is in [docs/sample-report.md](docs/sample-report.md).
 | 1 | At least one finding at or above `--fail-on` |
 | 2 | Usage error |
 
-When a finding is intentional, suppress it on the same or the previous line and say why:
+To see findings inline on pull requests, upload SARIF to GitHub code scanning:
+
+```yaml
+permissions:
+  security-events: write
+
+steps:
+  - name: PL/SQL performance check
+    run: |
+      dotnet run --project tools/plsql-performance-doctor/src/PlsqlDoctor.Cli -- \
+        analyze db/ --format sarif --out plsql-doctor.sarif --fail-on none
+  - uses: github/codeql-action/upload-sarif@v3
+    with:
+      sarif_file: plsql-doctor.sarif
+      category: plsql-performance-doctor
+```
+
+When a finding is intentional, suppress it on the same line or above the code and say why. Blank lines
+and other comment lines between the suppression and the code are allowed:
 
 ```sql
 -- plsql-doctor:ignore PD005 (covered by function-based index ix_customers_email_upper)
@@ -162,10 +185,10 @@ WHERE UPPER(email) = UPPER(p_email)
 ```text
              +----------------+     +-------------------+     +-------------+
  .sql  --->  |  PL/SQL lexer  | --> | SqlContext        | --> | PD rules    | --+
-             | (comments,     |     | loop depth, loop  |     | PD001-PD011 |   |
+             | (comments,     |     | loop depth, loop  |     | PD001-PD013 |   |
              |  strings, q'') |     | start, statements |     +-------------+   |
              +----------------+     +-------------------+                       |    +-----------+
-                                                                                +--> | Reporters | console / md / json
+                                                                                +--> | Reporters | console / md / json / sarif
              +----------------+     +-------------------+     +-------------+   |    +-----------+
  xplan --->  |  Plan parser   | --> | Plan tree         | --> | PX rules    | --+
              | (table, preds) |     | cost, rows, A-Rows|     | PX001-PX006 |
@@ -179,6 +202,20 @@ WHERE UPPER(email) = UPPER(p_email)
 
 Adding a rule means implementing `ISqlRule` or `IPlanRule`, registering it in `DefaultRules`, and adding
 tests.
+
+## Limitations
+
+The doctor reads one file at a time and does not connect to a database, so some things are out of reach:
+
+- **No analysis across procedures.** A loop that calls `log_pkg.write_row(r.id)` is not flagged even if
+  that procedure does an `INSERT`, because the body of the called procedure is not followed.
+- **No data dictionary.** The doctor does not know table sizes, existing indexes or column types. A full
+  scan of a small table or a `SELECT ... BULK COLLECT` from a 20-row lookup table can be fine; suppress
+  those findings with a comment.
+- **Heuristics, not a full parser.** Rules work on tokens and loop structure. Unusual formatting can
+  still cause a missed finding or a false positive. Please open an issue with the snippet.
+- **Plans are only as good as their statistics.** Estimated plans show what the optimizer believes. Use
+  `ALLSTATS LAST` to see what really happened.
 
 ## Roadmap
 

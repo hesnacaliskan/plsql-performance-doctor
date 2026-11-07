@@ -21,22 +21,61 @@ public static partial class PlanParser
     [GeneratedRegex(@"^(?<n>\d+(?:\.\d+)?)\s*(?<unit>[KMGTPE])?", RegexOptions.IgnoreCase)]
     private static partial Regex NumberWithUnit();
 
+    // "SQL_ID  8h2kq0p3x5m1v, child number 0" starts a cursor in DISPLAY_CURSOR output.
+    [GeneratedRegex(@"^SQL_ID[:\s]+(?<id>[A-Za-z0-9]+),?\s*child number\s+(?<child>\d+)", RegexOptions.IgnoreCase)]
+    private static partial Regex SqlIdLine();
+
     public static bool LooksLikePlan(string text) => PlanHeader().IsMatch(text);
 
-    public static ExecutionPlan Parse(string text)
+    /// <summary>Parses the first plan in <paramref name="text"/>. Use <see cref="ParseAll"/> for multi-plan output.</summary>
+    public static ExecutionPlan Parse(string text) => ParseAll(text).FirstOrDefault() ?? new ExecutionPlan([]);
+
+    /// <summary>
+    /// Parses every plan in <paramref name="text"/>. DISPLAY_CURSOR prints one plan per child cursor and
+    /// DISPLAY_AWR one per plan hash value; each of them becomes its own <see cref="ExecutionPlan"/>.
+    /// </summary>
+    public static IReadOnlyList<ExecutionPlan> ParseAll(string text)
     {
         var lines = text.Replace("\r\n", "\n").Split('\n');
+        var plans = new List<ExecutionPlan>();
         var steps = new List<PlanStep>();
         var predicates = new List<(int Id, string Type, string Text)>();
 
         string[]? header = null;
+        string? label = null;
         var inPredicates = false;
         int? currentPredicateId = null;
+
+        void Flush()
+        {
+            if (steps.Count > 0) plans.Add(Build(steps, predicates, label));
+            steps = [];
+            predicates = [];
+            header = null;
+            label = null;
+            inPredicates = false;
+            currentPredicateId = null;
+        }
 
         foreach (var rawLine in lines)
         {
             var line = rawLine.TrimEnd();
             var trimmed = line.Trim();
+
+            var sqlId = SqlIdLine().Match(trimmed);
+            if (sqlId.Success)
+            {
+                Flush();
+                label = $"SQL_ID {sqlId.Groups["id"].Value}, child {sqlId.Groups["child"].Value}";
+                continue;
+            }
+
+            // Every plan has one "Plan hash value" line; a second one after plan rows means a second plan.
+            if (trimmed.StartsWith("Plan hash value", StringComparison.OrdinalIgnoreCase))
+            {
+                if (steps.Count > 0) Flush();
+                continue;
+            }
 
             if (trimmed.StartsWith("Predicate Information", StringComparison.OrdinalIgnoreCase))
             {
@@ -48,57 +87,66 @@ public static partial class PlanParser
             {
                 if (trimmed.Length == 0 || trimmed.StartsWith("---")) continue;
 
-                // A non-indented line starts the next section ("Note", "Column Projection", ...).
+                // A non-indented line starts the next section ("Note", "Column Projection", the next
+                // plan table, ...). It falls through to the normal handling below.
                 if (!char.IsWhiteSpace(line[0]))
                 {
                     inPredicates = false;
+                }
+                else
+                {
+                    var withId = PredicateWithId().Match(line);
+                    if (withId.Success)
+                    {
+                        currentPredicateId = int.Parse(withId.Groups["id"].Value, CultureInfo.InvariantCulture);
+                        predicates.Add((currentPredicateId.Value, withId.Groups["type"].Value.ToLowerInvariant(), withId.Groups["text"].Value.Trim()));
+                        continue;
+                    }
+
+                    var continuation = PredicateContinuation().Match(line);
+                    if (continuation.Success && currentPredicateId is { } id)
+                    {
+                        predicates.Add((id, continuation.Groups["type"].Value.ToLowerInvariant(), continuation.Groups["text"].Value.Trim()));
+                        continue;
+                    }
+
+                    // Wrapped predicate text.
+                    if (predicates.Count > 0)
+                    {
+                        var last = predicates[^1];
+                        predicates[^1] = last with { Text = last.Text + " " + trimmed };
+                    }
+
                     continue;
                 }
-
-                var withId = PredicateWithId().Match(line);
-                if (withId.Success)
-                {
-                    currentPredicateId = int.Parse(withId.Groups["id"].Value, CultureInfo.InvariantCulture);
-                    predicates.Add((currentPredicateId.Value, withId.Groups["type"].Value.ToLowerInvariant(), withId.Groups["text"].Value.Trim()));
-                    continue;
-                }
-
-                var continuation = PredicateContinuation().Match(line);
-                if (continuation.Success && currentPredicateId is { } id)
-                {
-                    predicates.Add((id, continuation.Groups["type"].Value.ToLowerInvariant(), continuation.Groups["text"].Value.Trim()));
-                    continue;
-                }
-
-                // Wrapped predicate text.
-                if (predicates.Count > 0)
-                {
-                    var last = predicates[^1];
-                    predicates[^1] = last with { Text = last.Text + " " + trimmed };
-                }
-
-                continue;
             }
 
             if (!trimmed.StartsWith('|')) continue;
 
             var cells = SplitCells(trimmed);
-            if (header is null)
+            if (IsHeader(cells))
             {
-                if (cells.Any(c => c.Trim() == "Id") && cells.Any(c => c.Trim() == "Operation"))
-                {
-                    header = cells.Select(c => c.Trim()).ToArray();
-                }
-
+                // A second header without a SQL_ID or plan hash line in between is still a second plan.
+                if (header is not null) Flush();
+                header = cells.Select(c => c.Trim()).ToArray();
                 continue;
             }
 
-            if (cells.Length != header.Length) continue;
+            if (header is null || cells.Length != header.Length) continue;
 
             var step = ParseRow(header, cells);
             if (step is not null) steps.Add(step);
         }
 
+        Flush();
+        return plans;
+    }
+
+    private static bool IsHeader(string[] cells) =>
+        cells.Any(c => c.Trim() == "Id") && cells.Any(c => c.Trim() == "Operation");
+
+    private static ExecutionPlan Build(List<PlanStep> steps, List<(int Id, string Type, string Text)> predicates, string? label)
+    {
         foreach (var (id, type, predicateText) in predicates)
         {
             var step = steps.FirstOrDefault(s => s.Id == id);
@@ -106,7 +154,7 @@ public static partial class PlanParser
         }
 
         LinkTree(steps);
-        return new ExecutionPlan(steps);
+        return new ExecutionPlan(steps, label);
     }
 
     internal static double? ParseNumber(string? cell)

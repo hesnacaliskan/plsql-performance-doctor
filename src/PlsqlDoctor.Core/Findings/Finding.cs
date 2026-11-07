@@ -43,6 +43,11 @@ public sealed record AnalysisReport(
     IReadOnlyList<Finding> Findings,
     IReadOnlyList<string> Notes)
 {
+    /// <summary>Part of the source this report covers, e.g. one child cursor of a multi-plan file.</summary>
+    public string? Section { get; init; }
+
+    public string DisplayName => Section is null ? Source : $"{Source} [{Section}]";
+
     public int CountOf(Severity severity) => Findings.Count(f => f.Severity == severity);
 
     /// <summary>

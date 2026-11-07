@@ -6,6 +6,9 @@ namespace PlsqlDoctor.Core.Plans;
 /// <summary>Runs every plan rule over a DBMS_XPLAN text output.</summary>
 public sealed class PlanAnalyzer(IReadOnlyList<IPlanRule>? rules = null)
 {
+    private const string NoPlanNote =
+        "No plan table found. Paste the output of DBMS_XPLAN.DISPLAY or DBMS_XPLAN.DISPLAY_CURSOR.";
+
     public static IReadOnlyList<IPlanRule> DefaultRules { get; } =
     [
         new FullTableScanRule(),
@@ -18,14 +21,27 @@ public sealed class PlanAnalyzer(IReadOnlyList<IPlanRule>? rules = null)
 
     private readonly IReadOnlyList<IPlanRule> _rules = rules ?? DefaultRules;
 
-    public AnalysisReport Analyze(string planText, string sourceName)
+    /// <summary>
+    /// Analyzes every plan in the text. Output with several child cursors or plan hash values
+    /// gives one report per plan, so their steps and findings never get mixed up.
+    /// </summary>
+    public IReadOnlyList<AnalysisReport> AnalyzeAll(string planText, string sourceName)
     {
-        var plan = PlanParser.Parse(planText);
-        if (plan.Steps.Count == 0)
-        {
-            return new AnalysisReport(sourceName, SourceKind.ExecutionPlan, [],
-                ["No plan table found. Paste the output of DBMS_XPLAN.DISPLAY or DBMS_XPLAN.DISPLAY_CURSOR."]);
-        }
+        var plans = PlanParser.ParseAll(planText);
+        if (plans.Count == 0) return [new AnalysisReport(sourceName, SourceKind.ExecutionPlan, [], [NoPlanNote])];
+        if (plans.Count == 1) return [Analyze(plans[0], sourceName)];
+
+        return plans
+            .Select((plan, i) => Analyze(plan, sourceName) with { Section = plan.Label ?? $"plan {i + 1}" })
+            .ToList();
+    }
+
+    /// <summary>Analyzes the first plan in the text.</summary>
+    public AnalysisReport Analyze(string planText, string sourceName) => AnalyzeAll(planText, sourceName)[0];
+
+    public AnalysisReport Analyze(ExecutionPlan plan, string sourceName)
+    {
+        if (plan.Steps.Count == 0) return new AnalysisReport(sourceName, SourceKind.ExecutionPlan, [], [NoPlanNote]);
 
         var findings = _rules
             .SelectMany(rule => rule.Analyze(plan))

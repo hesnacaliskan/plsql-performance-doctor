@@ -93,4 +93,114 @@ public class PlanTests
         Assert.Empty(report.Findings);
         Assert.Contains("DBMS_XPLAN", Assert.Single(report.Notes));
     }
+
+    private const string TwoChildCursors = """
+        SQL_ID  abc123, child number 0
+        -------------------------------------
+        select * from orders where status = :s
+
+        Plan hash value: 111
+        ---------------------------------------------------------
+        | Id  | Operation          | Name   | Rows  | Cost (%CPU)|
+        ---------------------------------------------------------
+        |   0 | SELECT STATEMENT   |        |       |  5000 (100)|
+        |*  1 |  TABLE ACCESS FULL | ORDERS |  200K |  5000   (1)|
+        ---------------------------------------------------------
+
+        Predicate Information (identified by operation id):
+        ---------------------------------------------------
+           1 - filter("STATUS"=:S)
+
+        SQL_ID  abc123, child number 1
+        -------------------------------------
+        select * from orders where status = :s
+
+        Plan hash value: 222
+        ------------------------------------------------------------------
+        | Id  | Operation                   | Name   | Rows  | Cost (%CPU)|
+        ------------------------------------------------------------------
+        |   0 | SELECT STATEMENT            |        |       |     3 (100)|
+        |   1 |  TABLE ACCESS BY INDEX ROWID| ORDERS |     1 |     3   (0)|
+        |*  2 |   INDEX RANGE SCAN          | IX_ST  |     1 |     2   (0)|
+        ------------------------------------------------------------------
+
+        Predicate Information (identified by operation id):
+        ---------------------------------------------------
+           2 - access("STATUS"=:S)
+        """;
+
+    [Fact]
+    public void Each_child_cursor_is_parsed_as_its_own_plan()
+    {
+        var plans = PlanParser.ParseAll(TwoChildCursors);
+
+        Assert.Equal(2, plans.Count);
+        Assert.Equal("SQL_ID abc123, child 0", plans[0].Label);
+        Assert.Equal(2, plans[0].Steps.Count);
+        Assert.Equal("filter", Assert.Single(plans[0].Steps[1].Predicates).Type);
+
+        Assert.Equal("SQL_ID abc123, child 1", plans[1].Label);
+        Assert.Equal(3, plans[1].Steps.Count);
+        Assert.Equal("access", Assert.Single(plans[1].Steps[2].Predicates).Type);
+        Assert.Empty(plans[1].Steps[1].Predicates);
+    }
+
+    [Fact]
+    public void Multi_plan_output_gives_one_report_per_plan()
+    {
+        var reports = new PlanAnalyzer().AnalyzeAll(TwoChildCursors, "cursor.txt");
+
+        Assert.Equal(2, reports.Count);
+        Assert.Equal("cursor.txt [SQL_ID abc123, child 0]", reports[0].DisplayName);
+        Assert.Contains(reports[0].Findings, f => f.RuleId == "PX001");
+        Assert.Empty(reports[1].Findings);
+        Assert.StartsWith("3 plan steps", reports[1].Notes[0]);
+    }
+
+    [Fact]
+    public void Two_plan_tables_without_separators_are_still_split()
+    {
+        const string text = """
+            | Id  | Operation         | Name | Rows  | Cost (%CPU)|
+            |   0 | SELECT STATEMENT  |      |     1 |     2   (0)|
+            |   1 |  TABLE ACCESS FULL| A    |     1 |     2   (0)|
+            | Id  | Operation         | Name | Rows  | Cost (%CPU)|
+            |   0 | SELECT STATEMENT  |      |     1 |     2   (0)|
+            |   1 |  TABLE ACCESS FULL| B    |     1 |     2   (0)|
+            """;
+
+        var plans = PlanParser.ParseAll(text);
+
+        Assert.Equal(2, plans.Count);
+        Assert.Equal("B", plans[1].Steps[1].ObjectName);
+        Assert.Equal("plan 2", new PlanAnalyzer().AnalyzeAll(text, "p")[1].Section);
+    }
+
+    [Fact]
+    public void Index_skip_scan_is_reported_as_info()
+    {
+        const string plan = """
+            | Id  | Operation                   | Name        | Rows  | Cost (%CPU)|
+            |   0 | SELECT STATEMENT            |             |    10 |    12   (0)|
+            |   1 |  TABLE ACCESS BY INDEX ROWID| ORDERS      |    10 |    12   (0)|
+            |*  2 |   INDEX SKIP SCAN           | IX_ORD_C_DT |    10 |     4   (0)|
+            """;
+
+        var finding = Assert.Single(new PlanAnalyzer().Analyze(plan, "p").Findings, f => f.RuleId == "PX006");
+        Assert.Equal(Severity.Info, finding.Severity);
+        Assert.Contains("IX_ORD_C_DT", finding.Message);
+    }
+
+    [Theory]
+    [InlineData("| Id  | Operation | Name |")]
+    [InlineData("| Id  | Operation | Name |\n|   0 | SELECT STAT")]
+    [InlineData("| Id  | Operation | Name |\n|   x | SELECT STATEMENT |  |\n|     |                  |  |")]
+    [InlineData("Predicate Information (identified by operation id):\n   1 - filter(\"A\"=1)")]
+    public void Malformed_plans_never_throw(string text)
+    {
+        var report = new PlanAnalyzer().Analyze(text, "p");
+
+        Assert.Empty(report.Findings);
+        Assert.NotEmpty(report.Notes);
+    }
 }

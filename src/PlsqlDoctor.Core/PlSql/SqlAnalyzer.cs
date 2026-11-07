@@ -20,6 +20,8 @@ public sealed partial class SqlAnalyzer(IReadOnlyList<ISqlRule>? rules = null)
         new BulkCollectWithoutLimitRule(),
         new WhenOthersThenNullRule(),
         new CountForExistenceRule(),
+        new NestedCursorLoopRule(),
+        new CommitInTriggerRule(),
     ];
 
     private readonly IReadOnlyList<ISqlRule> _rules = rules ?? DefaultRules;
@@ -34,7 +36,7 @@ public sealed partial class SqlAnalyzer(IReadOnlyList<ISqlRule>? rules = null)
     public AnalysisReport Analyze(string source, string sourceName)
     {
         var context = new SqlContext(source, sourceName);
-        var suppressed = FindSuppressions(context.Lines);
+        var suppressed = FindSuppressions(context);
 
         var findings = _rules
             .SelectMany(rule => rule.Analyze(context))
@@ -46,9 +48,14 @@ public sealed partial class SqlAnalyzer(IReadOnlyList<ISqlRule>? rules = null)
         return new AnalysisReport(sourceName, SourceKind.PlSql, findings, []);
     }
 
-    /// <summary>An ignore comment applies to its own line and the line after it.</summary>
-    private static Dictionary<int, HashSet<string>> FindSuppressions(string[] lines)
+    /// <summary>
+    /// An ignore comment applies to its own line and to the next line that contains code, so blank
+    /// lines and further comment lines between the comment and the code are allowed.
+    /// </summary>
+    private static Dictionary<int, HashSet<string>> FindSuppressions(SqlContext context)
     {
+        var lines = context.Lines;
+        var codeLines = context.Tokens.Select(t => t.Line).Distinct().Order().ToArray();
         var result = new Dictionary<int, HashSet<string>>();
         for (var i = 0; i < lines.Length; i++)
         {
@@ -61,7 +68,9 @@ public sealed partial class SqlAnalyzer(IReadOnlyList<ISqlRule>? rules = null)
                 .Select(id => id.ToUpperInvariant())
                 .ToList();
 
-            foreach (var line in new[] { i + 1, i + 2 })
+            var commentLine = i + 1;
+            var next = Array.Find(codeLines, l => l > commentLine);
+            foreach (var line in next > 0 ? new[] { commentLine, next } : [commentLine])
             {
                 if (!result.TryGetValue(line, out var set)) result[line] = set = [];
                 set.UnionWith(ids);

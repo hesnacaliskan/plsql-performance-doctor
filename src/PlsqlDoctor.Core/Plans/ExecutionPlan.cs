@@ -48,9 +48,12 @@ public sealed class PlanStep
     }
 }
 
-public sealed class ExecutionPlan(IReadOnlyList<PlanStep> steps)
+public sealed class ExecutionPlan(IReadOnlyList<PlanStep> steps, string? label = null)
 {
     public IReadOnlyList<PlanStep> Steps { get; } = steps;
+
+    /// <summary>For example "SQL_ID 8h2kq0p3x5m1v, child 0" when the output names the cursor.</summary>
+    public string? Label { get; } = label;
 
     public PlanStep? Root => Steps.Count > 0 ? Steps[0] : null;
 

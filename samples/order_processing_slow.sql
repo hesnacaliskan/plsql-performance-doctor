@@ -72,5 +72,30 @@ CREATE OR REPLACE PACKAGE BODY order_processing AS
      WHERE customer_id NOT IN (SELECT customer_id FROM orders);
   END archive_orders;
 
+  PROCEDURE recalculate_totals IS
+    l_total NUMBER;
+  BEGIN
+    FOR o IN (SELECT order_id FROM orders WHERE status = 'PROCESSED') LOOP
+      l_total := 0;
+      FOR l IN (SELECT quantity, unit_price FROM order_lines WHERE order_id = o.order_id) LOOP
+        l_total := l_total + l.quantity * l.unit_price;
+      END LOOP;
+
+      UPDATE orders SET total_amount = l_total WHERE order_id = o.order_id;
+    END LOOP;
+  END recalculate_totals;
+
 END order_processing;
+/
+
+CREATE OR REPLACE TRIGGER trg_orders_audit
+AFTER UPDATE OF status ON orders
+FOR EACH ROW
+DECLARE
+  PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+  INSERT INTO order_status_log (order_id, old_status, new_status, changed_at)
+  VALUES (:OLD.order_id, :OLD.status, :NEW.status, SYSDATE);
+  COMMIT;
+END;
 /

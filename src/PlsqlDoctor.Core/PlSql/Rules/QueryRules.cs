@@ -66,7 +66,7 @@ public sealed class FunctionOnColumnRule : SqlRule
             if (!fn.IsWordIn(Functions) || !ctx.IsSymbolAt(i + 1, "(")) continue;
 
             var prev = ctx.At(i - 1);
-            if (prev is null || !prev.IsWordIn(PredicateStarters)) continue;
+            if (prev is null || !prev.IsWordIn(PredicateStarters) || IsPlSqlCondition(ctx, i)) continue;
 
             var arg = ctx.At(i + 2);
             if (arg is null || !arg.IsIdentifier || arg.IsWordIn(NotColumns)) continue;
@@ -101,6 +101,32 @@ public sealed class FunctionOnColumnRule : SqlRule
                 SuggestionFor(name, column, bare));
         }
     }
+
+    /// <summary>
+    /// True for a PL/SQL boolean expression such as IF a AND UPPER(x) = 'Y' THEN. It never touches a table,
+    /// so there is no index to lose. Walks back to the start of the expression: a SQL clause keyword
+    /// means SQL, IF / ELSIF / WHILE / EXIT / RETURN / := means PL/SQL.
+    /// </summary>
+    private static bool IsPlSqlCondition(SqlContext ctx, int index)
+    {
+        for (var j = index - 1; j >= 0; j--)
+        {
+            var t = ctx.Tokens[j];
+            if (t.IsWordIn(SqlClauseWords)) return false;
+            if (t.IsWordIn(PlSqlConditionWords) || t.IsSymbol(":=")) return true;
+            if (t.IsSymbol(";") || t.IsWordIn(BlockBoundaryWords)) return false;
+        }
+
+        return false;
+    }
+
+    private static readonly HashSet<string> SqlClauseWords = Words(
+        "SELECT", "WHERE", "ON", "HAVING", "FROM", "JOIN", "SET", "UPDATE", "DELETE", "MERGE", "INSERT");
+
+    private static readonly HashSet<string> PlSqlConditionWords = Words("IF", "ELSIF", "WHILE", "EXIT", "RETURN");
+
+    private static readonly HashSet<string> BlockBoundaryWords = Words(
+        "BEGIN", "THEN", "ELSE", "LOOP", "DECLARE", "EXCEPTION", "IS", "AS");
 
     private static string SuggestionFor(string fn, string column, string bare) => fn switch
     {
@@ -223,6 +249,13 @@ public sealed class CountForExistenceRule : SqlRule
 
             if (limited) continue;
 
+            // The count is a real number when the code uses it as one (l_total := n * 2, log(n), ...).
+            if (ctx.At(i + 6) is { IsIdentifier: true } target && !ctx.IsSymbolAt(i + 7, ".") &&
+                IsUsedAsNumber(ctx, target.Text, end))
+            {
+                continue;
+            }
+
             yield return Create(
                 ctx,
                 ctx.Tokens[i],
@@ -231,4 +264,33 @@ public sealed class CountForExistenceRule : SqlRule
                 "SELECT CASE WHEN EXISTS (SELECT 1 FROM ... WHERE ...) THEN 1 ELSE 0 END INTO l_found FROM dual.");
         }
     }
+
+    private static readonly HashSet<string> ComparisonSymbols = ["=", "<", ">", "<=", ">=", "<>", "!=", "^="];
+
+    private static readonly HashSet<string> SubprogramWords = Words("PROCEDURE", "FUNCTION", "CREATE");
+
+    /// <summary>
+    /// True when <paramref name="variable"/> is read after the statement in any way other than a
+    /// comparison with 0 or 1, before it is overwritten or the next subprogram starts.
+    /// </summary>
+    private static bool IsUsedAsNumber(SqlContext ctx, string variable, int from)
+    {
+        for (var j = from + 1; j < ctx.Tokens.Count; j++)
+        {
+            var t = ctx.Tokens[j];
+            if (t.IsWordIn(SubprogramWords)) return false;
+            if (!t.IsIdentifier || !t.Text.Equals(variable, StringComparison.OrdinalIgnoreCase)) continue;
+            if (ctx.IsSymbolAt(j - 1, ".")) continue; // r.n is a different thing
+
+            if (ctx.IsSymbolAt(j + 1, ":=") || ctx.IsWordAt(j - 1, "INTO")) return false;
+            if (IsZeroOrOneComparison(ctx, j + 1, j + 2) || IsZeroOrOneComparison(ctx, j - 1, j - 2)) continue;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsZeroOrOneComparison(SqlContext ctx, int op, int value) =>
+        ctx.At(op) is { Kind: TokenKind.Symbol } symbol && ComparisonSymbols.Contains(symbol.Text) &&
+        ctx.At(value) is { Kind: TokenKind.Number, Text: "0" or "1" };
 }

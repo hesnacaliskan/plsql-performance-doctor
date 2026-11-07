@@ -8,7 +8,12 @@
     <PackageId>PlsqlPerformanceDoctor</PackageId>
     <Description>Finds performance anti-patterns in Oracle PL/SQL code and DBMS_XPLAN execution plans.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>oracle;plsql;sql;performance;linter;static-analysis;xplan;sarif</PackageTags>
   </PropertyGroup>
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\PlsqlDoctor.Core\PlsqlDoctor.Core.csproj" />
   </ItemGroup>

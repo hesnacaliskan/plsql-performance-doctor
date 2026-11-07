@@ -25,7 +25,7 @@ public sealed class ConsoleReporter(bool useColor, bool showExamples) : IReporte
             var all = reports.SelectMany(r => r.Findings).ToList();
             w.WriteLine();
             w.WriteLine(new string('=', Width));
-            w.WriteLine($"{reports.Count} files analyzed: {Counts(all)}");
+            w.WriteLine($"{reports.Count} sources analyzed: {Counts(all)}");
         }
     }
 
@@ -34,7 +34,7 @@ public sealed class ConsoleReporter(bool useColor, bool showExamples) : IReporte
         w.WriteLine();
         w.WriteLine(new string('-', Width));
         var kind = r.Kind == SourceKind.PlSql ? "PL/SQL" : "execution plan";
-        w.WriteLine($"{Paint("1", r.Source)}  [{kind}]");
+        w.WriteLine($"{Paint("1", r.DisplayName)}  [{kind}]");
         w.WriteLine($"Health score {Score(r.HealthScore)}   {Counts(r.Findings)}");
         foreach (var note in r.Notes) WriteWrapped(w, "  * ", "    ", note, "2");
 
@@ -106,14 +106,14 @@ public sealed class MarkdownReporter : IReporter
         w.WriteLine("|---|---|---:|---:|---:|---:|");
         foreach (var r in reports)
         {
-            w.WriteLine($"| `{r.Source}` | {KindName(r.Kind)} | {r.HealthScore}/100 | {r.CountOf(Severity.Critical)} | " +
+            w.WriteLine($"| `{r.DisplayName}` | {KindName(r.Kind)} | {r.HealthScore}/100 | {r.CountOf(Severity.Critical)} | " +
                         $"{r.CountOf(Severity.Warning)} | {r.CountOf(Severity.Info)} |");
         }
 
         foreach (var r in reports)
         {
             w.WriteLine();
-            w.WriteLine($"## `{r.Source}`");
+            w.WriteLine($"## `{r.DisplayName}`");
             w.WriteLine();
             foreach (var note in r.Notes) w.WriteLine($"- {note}");
             if (r.Notes.Count > 0) w.WriteLine();
