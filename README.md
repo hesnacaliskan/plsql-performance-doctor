@@ -1,6 +1,6 @@
 # PL/SQL Performance Doctor
 
-[![CI](https://github.com/OWNER/plsql-performance-doctor/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/plsql-performance-doctor/actions/workflows/ci.yml)
+[![CI](https://github.com/hesnacaliskan/plsql-performance-doctor/actions/workflows/ci.yml/badge.svg)](https://github.com/hesnacaliskan/plsql-performance-doctor/actions/workflows/ci.yml)
 ![.NET 10](https://img.shields.io/badge/.NET-10-512BD4)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
@@ -62,7 +62,7 @@ happens**: in the terminal and in CI, with no database connection needed.
 ## Quick start
 
 ```bash
-git clone https://github.com/OWNER/plsql-performance-doctor.git
+git clone https://github.com/hesnacaliskan/plsql-performance-doctor.git
 cd plsql-performance-doctor
 dotnet run --project src/PlsqlDoctor.Cli -- analyze samples
 ```

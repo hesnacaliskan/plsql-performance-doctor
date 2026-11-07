@@ -9,6 +9,8 @@
     <Description>Finds performance anti-patterns in Oracle PL/SQL code and DBMS_XPLAN execution plans.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/hesnacaliskan/plsql-performance-doctor</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/hesnacaliskan/plsql-performance-doctor</RepositoryUrl>
     <PackageTags>oracle;plsql;sql;performance;linter;static-analysis;xplan;sarif</PackageTags>
   </PropertyGroup>
   <ItemGroup>
