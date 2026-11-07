@@ -166,7 +166,7 @@ steps:
     run: |
       dotnet run --project tools/plsql-performance-doctor/src/PlsqlDoctor.Cli -- \
         analyze db/ --format sarif --out plsql-doctor.sarif --fail-on none
-  - uses: github/codeql-action/upload-sarif@v3
+  - uses: github/codeql-action/upload-sarif@v4
     with:
       sarif_file: plsql-doctor.sarif
       category: plsql-performance-doctor
