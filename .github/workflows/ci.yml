@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore -c Release
+
+      - name: Test
+        run: dotnet test --no-build -c Release --logger "trx;LogFileName=results.trx"
+
+      - name: Analyze samples (dogfooding)
+        run: |
+          dotnet run --project src/PlsqlDoctor.Cli -c Release --no-build -- \
+            analyze samples --format markdown --out report.md --fail-on none
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fixed sample must stay clean
+        run: |
+          dotnet run --project src/PlsqlDoctor.Cli -c Release --no-build -- \
+            analyze samples/order_processing_fixed.sql --fail-on info

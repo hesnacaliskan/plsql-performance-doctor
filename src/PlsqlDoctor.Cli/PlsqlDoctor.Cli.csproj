@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>PlsqlDoctor.Cli</RootNamespace>
+    <AssemblyName>plsql-doctor</AssemblyName>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>plsql-doctor</ToolCommandName>
+    <PackageId>PlsqlPerformanceDoctor</PackageId>
+    <Description>Finds performance anti-patterns in Oracle PL/SQL code and DBMS_XPLAN execution plans.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\PlsqlDoctor.Core\PlsqlDoctor.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="PlsqlDoctor.Tests" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>PlsqlDoctor.Core</RootNamespace>
+    <Description>Static analyzer for Oracle PL/SQL code and DBMS_XPLAN execution plans.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="PlsqlDoctor.Tests" />
+  </ItemGroup>
+</Project>

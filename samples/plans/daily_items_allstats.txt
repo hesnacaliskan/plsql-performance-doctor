@@ -1,0 +1,25 @@
+SQL_ID  8h2kq0p3x5m1v, child number 0
+-------------------------------------
+SELECT /*+ GATHER_PLAN_STATISTICS */ p.product_name, oi.quantity
+  FROM order_items oi
+  JOIN products p ON p.product_id = oi.product_id
+ WHERE oi.created_at > SYSDATE - 1
+
+Plan hash value: 3398720145
+
+-------------------------------------------------------------------------------------------------
+| Id  | Operation                    | Name        | Starts | E-Rows | A-Rows |   A-Time   | Buffers |
+-------------------------------------------------------------------------------------------------
+|   0 | SELECT STATEMENT             |             |      1 |        |  85000 |00:00:03.95 |    258K|
+|   1 |  NESTED LOOPS                |             |      1 |     12 |  85000 |00:00:03.95 |    258K|
+|   2 |   NESTED LOOPS               |             |      1 |     12 |  85000 |00:00:02.61 |    173K|
+|*  3 |    TABLE ACCESS FULL         | ORDER_ITEMS |      1 |     12 |  85000 |00:00:00.35 |    3420 |
+|*  4 |    INDEX UNIQUE SCAN         | PK_PRODUCTS |  85000 |      1 |  85000 |00:00:02.10 |    170K|
+|   5 |   TABLE ACCESS BY INDEX ROWID| PRODUCTS    |  85000 |      1 |  85000 |00:00:01.20 |   85000 |
+-------------------------------------------------------------------------------------------------
+
+Predicate Information (identified by operation id):
+---------------------------------------------------
+
+   3 - filter("OI"."CREATED_AT">SYSDATE-1)
+   4 - access("OI"."PRODUCT_ID"="P"."PRODUCT_ID")
